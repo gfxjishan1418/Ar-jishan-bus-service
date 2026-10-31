@@ -22,6 +22,8 @@ yarn-error.log*
 # Local environment files (contains secret keys)
 .env*.local
 .env
+import.env
+*.env
 !.env.example
 
 # Vercel
