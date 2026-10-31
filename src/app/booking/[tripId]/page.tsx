@@ -17,6 +17,8 @@ import {
 import { Booking, BookingPassenger, PaymentMethod } from '@/lib/types/database';
 import { formatBDT, formatDateBD, generatePNR, generateBookingId } from '@/lib/utils';
 import { bkashAdapter } from '@/lib/payments/bkash';
+import { supabase, isSupabaseConfigured } from '@/lib/supabase/client';
+import PaymentGatewayModals from '@/components/booking/PaymentGatewayModals';
 import {
   Bus,
   Clock,
@@ -25,6 +27,8 @@ import {
   Users,
   ShieldCheck,
   CreditCard,
+  Building2,
+  Banknote,
   CheckCircle2,
   AlertTriangle,
   ArrowRight,
@@ -196,7 +200,13 @@ export default function BookingFlowPage() {
     setErrorMessage(null);
   };
 
-  // Confirm and Pay Booking Handler
+  const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [pendingBookingData, setPendingBookingData] = useState<{
+    pnr: string;
+    bookingId: string;
+  } | null>(null);
+
+  // Confirm and Pay Booking Handler: Opens official gateway modal
   const handleConfirmAndPay = async () => {
     setIsProcessing(true);
     setErrorMessage(null);
@@ -210,7 +220,28 @@ export default function BookingFlowPage() {
         return;
       }
 
-      // Build passengers array
+      const generatedPNR = generatePNR();
+      const generatedBookingId = generateBookingId();
+      setPendingBookingData({ pnr: generatedPNR, bookingId: generatedBookingId });
+      setIsPaymentModalOpen(true);
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Payment initiation failed.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // Payment Gateway Success Callback
+  const handlePaymentSuccess = async (details: {
+    method: 'bkash' | 'nagad' | 'bank' | 'cash';
+    trxId: string;
+    paidAmount: number;
+    accountOrCard?: string;
+  }) => {
+    if (!pendingBookingData) return;
+    setIsProcessing(true);
+
+    try {
       const manifestPassengers: BookingPassenger[] = selectedSeats.map((seatId) => {
         const p = passengerData[seatId];
         return {
@@ -222,13 +253,10 @@ export default function BookingFlowPage() {
         };
       });
 
-      const generatedPNR = generatePNR();
-      const generatedBookingId = generateBookingId();
-
       const newBooking: Booking = {
         id: 'bkg-' + Date.now(),
-        booking_id: generatedBookingId,
-        pnr: generatedPNR,
+        booking_id: pendingBookingData.bookingId,
+        pnr: pendingBookingData.pnr,
         trip_id: trip.id,
         trip: trip,
         customer_id: user?.id,
@@ -243,22 +271,54 @@ export default function BookingFlowPage() {
         discount_amount: discountAmount,
         total_amount: netTotal,
         booking_status: 'confirmed',
-        payment_status: 'paid',
-        payment_method: selectedPayment,
+        payment_status: details.method === 'cash' ? 'pending' : 'paid',
+        payment_method: details.method,
         booking_channel: isCounterStaff ? 'counter' : 'online',
         counter_id: isCounterStaff ? 'counter-1' : undefined,
-        qr_code_data: `VERIFY:${generatedPNR}:${generatedBookingId}`,
+        qr_code_data: `VERIFY:${pendingBookingData.pnr}:${pendingBookingData.bookingId}`,
         seats: manifestPassengers,
         created_at: new Date().toISOString(),
       };
 
-      // Save confirmed record to memory store & clear locks
-      confirmBookingRecord(newBooking);
+      // Save into Supabase PostgreSQL if active
+      if (isSupabaseConfigured()) {
+        try {
+          await supabase.from('bookings').insert({
+            booking_reference: newBooking.booking_id,
+            pnr: newBooking.pnr,
+            trip_id: '55555555-5555-5555-5555-555555555501',
+            customer_name: newBooking.customer_name,
+            customer_phone: newBooking.customer_phone,
+            customer_email: newBooking.customer_email || null,
+            boarding_stop: newBooking.boarding_point,
+            dropping_stop: newBooking.dropping_point,
+            channel: isCounterStaff ? 'counter' : 'online',
+            total_seat_count: newBooking.total_seats,
+            subtotal_amount: newBooking.subtotal_fare,
+            service_charge: newBooking.service_charge,
+            discount_amount: newBooking.discount_amount,
+            total_amount: newBooking.total_amount,
+            booking_status: 'confirmed',
+          });
 
-      // Navigate to confirmed e-ticket page
+          await supabase.from('payments').insert({
+            booking_id: '55555555-5555-5555-5555-555555555501',
+            provider: details.method,
+            transaction_id: details.trxId,
+            amount: details.paidAmount,
+            currency: 'BDT',
+            status: details.method === 'cash' ? 'initiated' : 'completed',
+          });
+        } catch (dbErr) {
+          console.warn('Supabase booking save notice:', dbErr);
+        }
+      }
+
+      confirmBookingRecord(newBooking);
+      setIsPaymentModalOpen(false);
       router.push(`/booking/confirmation/${newBooking.booking_id}`);
     } catch (err: any) {
-      setErrorMessage(err.message || 'Payment or booking creation failed.');
+      setErrorMessage(err.message || 'Payment confirmation failed');
       setIsProcessing(false);
     }
   };
@@ -737,7 +797,7 @@ export default function BookingFlowPage() {
 
                 {/* Payment Option Cards */}
                 <div className="space-y-3">
-                  {/* bKash */}
+                  {/* 1. bKash Tokenized Checkout */}
                   <label
                     className={`flex items-center justify-between p-4 rounded-xl border-2 cursor-pointer transition-all ${
                       selectedPayment === 'bkash'
@@ -754,21 +814,26 @@ export default function BookingFlowPage() {
                         onChange={() => setSelectedPayment('bkash')}
                         className="text-gold focus:ring-gold"
                       />
-                      <div className="w-8 h-8 rounded bg-[#E2136E] flex items-center justify-center font-bold text-[11px] text-white">
+                      <div className="w-9 h-9 rounded-xl bg-[#E2136E] flex items-center justify-center font-black text-xs text-white shadow-sm">
                         bK
                       </div>
                       <div>
-                        <span className="font-bold text-xs text-deepBlack block">
-                          bKash Tokenized Checkout
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-xs text-deepBlack">
+                            bKash Tokenized Checkout
+                          </span>
+                          <span className="px-1.5 py-0.5 rounded bg-pink-100 text-[#E2136E] font-bold text-[10px]">
+                            Instant PIN
+                          </span>
+                        </div>
                         <span className="text-[11px] text-gray-500">
-                          Instant OTP/PIN verification with official bKash Merchant API
+                          অফিসিয়াল বিকাশ মার্চেন্ট পেমেন্ট (OTP ও PIN ভেরিফিকেশন)
                         </span>
                       </div>
                     </div>
                   </label>
 
-                  {/* Nagad */}
+                  {/* 2. Nagad Merchant Payment */}
                   <label
                     className={`flex items-center justify-between p-4 rounded-xl border-2 cursor-pointer transition-all ${
                       selectedPayment === 'nagad'
@@ -785,52 +850,96 @@ export default function BookingFlowPage() {
                         onChange={() => setSelectedPayment('nagad')}
                         className="text-gold focus:ring-gold"
                       />
-                      <div className="w-8 h-8 rounded bg-[#F7941D] flex items-center justify-center font-bold text-[11px] text-white">
+                      <div className="w-9 h-9 rounded-xl bg-[#F7941D] flex items-center justify-center font-black text-xs text-white shadow-sm">
                         NG
                       </div>
                       <div>
-                        <span className="font-bold text-xs text-deepBlack block">
-                          Nagad Merchant Payment
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-xs text-deepBlack">
+                            Nagad Merchant Direct
+                          </span>
+                          <span className="px-1.5 py-0.5 rounded bg-orange-100 text-[#F7941D] font-bold text-[10px]">
+                            Fast DFS
+                          </span>
+                        </div>
                         <span className="text-[11px] text-gray-500">
-                          Official Nagad Direct DFS Checkout
+                          অফিসিয়াল নগদ ডিরেক্ট মার্চেন্ট চেকআউট গেটওয়ে
                         </span>
                       </div>
                     </div>
                   </label>
 
-                  {/* Counter Cash (Enabled for Counter staff / Operators) */}
-                  {isCounterStaff && (
-                    <label
-                      className={`flex items-center justify-between p-4 rounded-xl border-2 cursor-pointer transition-all ${
-                        selectedPayment === 'cash'
-                          ? 'border-gold bg-gold/5 shadow-sm'
-                          : 'border-gray-200 hover:border-gray-300'
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <input
-                          type="radio"
-                          name="paymentMethod"
-                          value="cash"
-                          checked={selectedPayment === 'cash'}
-                          onChange={() => setSelectedPayment('cash')}
-                          className="text-gold focus:ring-gold"
-                        />
-                        <div className="w-8 h-8 rounded bg-emerald-600 flex items-center justify-center font-bold text-[11px] text-white">
-                          ৳
-                        </div>
-                        <div>
-                          <span className="font-bold text-xs text-deepBlack block">
-                            Counter Cash Payment (Agent Terminal)
-                          </span>
-                          <span className="text-[11px] text-gray-500">
-                            Cash received at counter terminal desk by authorized staff
-                          </span>
-                        </div>
+                  {/* 3. Debit / Credit Card & Internet Banking */}
+                  <label
+                    className={`flex items-center justify-between p-4 rounded-xl border-2 cursor-pointer transition-all ${
+                      selectedPayment === 'bank'
+                        ? 'border-gold bg-gold/5 shadow-sm'
+                        : 'border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="radio"
+                        name="paymentMethod"
+                        value="bank"
+                        checked={selectedPayment === 'bank'}
+                        onChange={() => setSelectedPayment('bank')}
+                        className="text-gold focus:ring-gold"
+                      />
+                      <div className="w-9 h-9 rounded-xl bg-[#1A1F71] flex items-center justify-center font-bold text-white shadow-sm">
+                        <CreditCard className="w-4 h-4 text-gold" />
                       </div>
-                    </label>
-                  )}
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-xs text-deepBlack">
+                            Debit / Credit Card & Bank Transfer
+                          </span>
+                          <span className="px-1.5 py-0.5 rounded bg-blue-100 text-[#1A1F71] font-bold text-[10px]">
+                            3D Secure
+                          </span>
+                        </div>
+                        <span className="text-[11px] text-gray-500">
+                          Visa, Mastercard, NexusPay, CityTouch, Islami Bank Cellfin
+                        </span>
+                      </div>
+                    </div>
+                  </label>
+
+                  {/* 4. Cash on Counter / Pay at Boarding */}
+                  <label
+                    className={`flex items-center justify-between p-4 rounded-xl border-2 cursor-pointer transition-all ${
+                      selectedPayment === 'cash'
+                        ? 'border-gold bg-gold/5 shadow-sm'
+                        : 'border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <input
+                        type="radio"
+                        name="paymentMethod"
+                        value="cash"
+                        checked={selectedPayment === 'cash'}
+                        onChange={() => setSelectedPayment('cash')}
+                        className="text-gold focus:ring-gold"
+                      />
+                      <div className="w-9 h-9 rounded-xl bg-emerald-600 flex items-center justify-center font-black text-sm text-white shadow-sm">
+                        ৳
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-xs text-deepBlack">
+                            Cash Payment (Counter / On-Boarding)
+                          </span>
+                          <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold text-[10px]">
+                            Pay Later
+                          </span>
+                        </div>
+                        <span className="text-[11px] text-gray-500">
+                          কাউন্টার ডেস্কে অথবা বাসে ওঠার সময় সরাসরি ক্যাশ টাকা পরিশোধ করুন
+                        </span>
+                      </div>
+                    </div>
+                  </label>
                 </div>
 
                 {/* Final Confirmation Button */}
@@ -901,6 +1010,20 @@ export default function BookingFlowPage() {
           )}
         </div>
       </div>
+
+      {/* Interactive Automated Merchant Payment Gateway Modal */}
+      {isPaymentModalOpen && pendingBookingData && (
+        <PaymentGatewayModals
+          isOpen={isPaymentModalOpen}
+          onClose={() => setIsPaymentModalOpen(false)}
+          method={selectedPayment as 'bkash' | 'nagad' | 'bank' | 'cash'}
+          amount={netTotal}
+          pnr={pendingBookingData.pnr}
+          bookingId={pendingBookingData.bookingId}
+          customerPhone={customerPhone}
+          onSuccess={handlePaymentSuccess}
+        />
+      )}
 
       <Footer />
     </div>

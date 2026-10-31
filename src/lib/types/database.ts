@@ -122,7 +122,7 @@ export interface SeatLock {
 
 export type BookingStatus = 'pending' | 'confirmed' | 'cancelled' | 'partially_cancelled' | 'refunded';
 export type PaymentStatus = 'pending' | 'processing' | 'paid' | 'failed' | 'cancelled' | 'refunded' | 'partially_refunded';
-export type PaymentMethod = 'bkash' | 'nagad' | 'bank_transfer' | 'cash' | 'card';
+export type PaymentMethod = 'bkash' | 'nagad' | 'bank_transfer' | 'cash' | 'card' | 'bank';
 
 export interface BookingPassenger {
   seat_number: string;
