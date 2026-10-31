@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS public.routes (
     origin_id UUID NOT NULL REFERENCES public.destinations(id),
     destination_id UUID NOT NULL REFERENCES public.destinations(id),
     distance_km NUMERIC(6,2),
-    estimated_duration VARCHAR(50), -- e.g. '5h 30m'
+    estimated_duration VARCHAR(50), -- e.g. 5h 30m
     starting_fare NUMERIC(10,2) NOT NULL DEFAULT 0.00,
     is_active BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

@@ -34,7 +34,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- Helper function to check user's assigned counter ID
+-- Helper function to check users assigned counter ID
 CREATE OR REPLACE FUNCTION public.fn_get_user_counter_id()
 RETURNS UUID AS $$
 DECLARE
